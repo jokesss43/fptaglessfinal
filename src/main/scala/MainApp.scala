@@ -7,7 +7,6 @@ import programs.AtmProgram
 object MainApp:
 
   def main(args: Array[String]): Unit =
-    // Компилятор теперь без проблем увидит здесь неявный экземпляр Monad
     given consoleImpl: ConsoleAlg[AtmStack] = new ConsoleInterpreter
     given logicImpl: AtmLogicAlg[AtmStack]   = new LogicInterpreter
 
