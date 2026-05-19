@@ -2,16 +2,15 @@ package programs
 
 import models.*
 import algebras.*
-import interpreters.* // Импортируем extension методы для map/flatMap
+import interpreters.* 
 
 class AtmProgram[F[_]](using F: Monad[F], console: ConsoleAlg[F], logic: AtmLogicAlg[F]):
 
-  // В ТОЧНОСТИ КАК НА СКРИНШОТЕ, но адаптировано под абстрактный F
   case class MenuItem(name: String, exec: (String, AtmState) => F[Unit])
 
   case class Menu(header: String, items: Seq[MenuItem]):
     def show: String =
-      // Твой одногруппник складывал s"$header \n " + строки
+
       val lines = items.zipWithIndex.map { (item, i) =>
         s"${i + 1}. ${item.name}"
       }
@@ -30,7 +29,7 @@ class AtmProgram[F[_]](using F: Monad[F], console: ConsoleAlg[F], logic: AtmLogi
     Seq(
       MenuItem("Снять наличные", (u, s) => doWithdraw(u)),
       MenuItem("Пополнить счет", (u, s) => doDeposit(u)),
-      MenuItem("Сделать перевод", (u, s) => doTransfer(u)), // Добавили пункт
+      MenuItem("Сделать перевод", (u, s) => doTransfer(u)), 
       MenuItem("Сменить пользователя", (u, s) => userMenu())
     )
   )
@@ -166,7 +165,6 @@ class AtmProgram[F[_]](using F: Monad[F], console: ConsoleAlg[F], logic: AtmLogi
       } yield ()
     } yield ()
 
-  // 1. Запрашиваем имя получателя
   def doTransfer(user: String): F[Unit] =
     for {
       _      <- console.putStr("Имя получателя: ")
@@ -174,7 +172,6 @@ class AtmProgram[F[_]](using F: Monad[F], console: ConsoleAlg[F], logic: AtmLogi
       _      <- handleTransferTarget(toUser, user)
     } yield ()
 
-  // 2. Проверяем валидность получателя
   def handleTransferTarget(toUser: String, user: String): F[Unit] =
     for {
       exists <- logic.userExists(toUser)
@@ -190,7 +187,6 @@ class AtmProgram[F[_]](using F: Monad[F], console: ConsoleAlg[F], logic: AtmLogi
         } yield ()
     } yield ()
 
-  // 3. Считаем комиссию, проверяем баланс и выполняем перевод
   def processTransfer(input: String, user: String, toUser: String): F[Unit] =
     val amount = input.toDoubleOption.getOrElse(0.0)
     if (amount <= 0) then
@@ -200,7 +196,6 @@ class AtmProgram[F[_]](using F: Monad[F], console: ConsoleAlg[F], logic: AtmLogi
         cfg   <- logic.getContext
         state <- logic.getState
 
-        // Считаем комиссию
         fee = amount * (cfg.comission / 100.0)
         totalAmount = amount + fee
 
