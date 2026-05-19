@@ -12,7 +12,6 @@ given atmMonad: Monad[AtmStack] with
     Reader { cfg =>
       State { s =>
         val (ioA, nextS) = fa.run(cfg).run(s)
-        // Метод flatMap на ioA теперь гарантированно существует благодаря шагу №1
         val ioB = ioA.flatMap { a =>
           f(a).run(cfg).run(nextS)._1
         }
