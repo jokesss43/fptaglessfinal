@@ -25,7 +25,7 @@ class AtmProgram[F[_]](using F: Monad[F], console: ConsoleAlg[F], logic: AtmLogi
           .flatMap(_ => mainMenu(user))
 
   val atmMenu = Menu(
-    "=== ГЛАВНОЕ МЕНЮ ===",
+    "ГЛАВНОЕ МЕНЮ",
     Seq(
       MenuItem("Снять наличные", (u, s) => doWithdraw(u)),
       MenuItem("Пополнить счет", (u, s) => doDeposit(u)),
