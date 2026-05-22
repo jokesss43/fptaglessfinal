@@ -2,59 +2,23 @@ package programs
 
 import models.*
 import algebras.*
-import interpreters.* 
+import cats.Monad
+import cats.syntax.all.*
 
-class AtmProgram[F[_]](using F: Monad[F], console: ConsoleAlg[F], logic: AtmLogicAlg[F]):
+case class MenuItem[F[_]](name: String, exec: F[Unit])
 
-  case class MenuItem(name: String, exec: (String, AtmState) => F[Unit])
+case class Menu[F[_]](header: String, items: List[MenuItem[F]])
 
-  case class Menu(header: String, items: Seq[MenuItem]):
-    def show: String =
+class AtmProgram[F[_]](
+                        console: ConsoleAlg[F],
+                        logic: AtmLogicAlg[F]
+                      )(using F: Monad[F]):
 
-      val lines = items.zipWithIndex.map { (item, i) =>
-        s"${i + 1}. ${item.name}"
-      }
-      s"$header\n" + lines.mkString("\n")
+  def checkWithdrawRule(balance: Double, alreadyToday: Double, amount: Double): F[Boolean] =
+    logic.getContext.map(cfg => amount > 0 && balance >= amount && (alreadyToday + amount) <= cfg.daylim)
 
-    def handleInput(user: String, state: AtmState, input: String): F[Unit] =
-      val index = input.toIntOption.map(_ - 1).getOrElse(-1)
-      if (index >= 0 && index < items.length)
-        items(index).exec(user, state)
-      else
-        console.putStrLn("Неверный выбор. Попробуйте снова.")
-          .flatMap(_ => mainMenu(user))
-
-  val atmMenu = Menu(
-    "ГЛАВНОЕ МЕНЮ",
-    Seq(
-      MenuItem("Снять наличные", (u, s) => doWithdraw(u)),
-      MenuItem("Пополнить счет", (u, s) => doDeposit(u)),
-      MenuItem("Сделать перевод", (u, s) => doTransfer(u)), 
-      MenuItem("Сменить пользователя", (u, s) => userMenu())
-    )
-  )
-
-  def checkWithdrawRule(balance: Double, alreadyToday: Double, amount: Double): F[Writer[Boolean]] =
-    for {
-      cfg <- logic.getContext
-    } yield {
-      val r1 = amount > 0
-      val r2 = balance >= amount
-      val r3 = (alreadyToday + amount) <= cfg.daylim
-      Writer(
-        List(
-          if (r1) "Сумма корректна" else "Сумма должна быть больше нуля",
-          if (r2) "Баланс проверен" else "Недостаточно денег",
-          if (r3) "Лимит в норме" else "Превышен лимит"
-        ),
-        r1 && r2 && r3
-      )
-    }
-
-  def calculatePlan(amount: Int, cash: Map[Int, Int]): F[Writer[Option[Map[Int, Int]]]] =
-    for {
-      cfg <- logic.getContext
-    } yield {
+  def calculatePlan(amount: Int, cash: Map[Int, Int]): F[Option[Map[Int, Int]]] =
+    logic.getContext.map { cfg =>
       val sortedNotes = cfg.banknotes.sorted.reverse
       val (leftover, plan) = sortedNotes.foldLeft((amount, Map.empty[Int, Int])) { (acc, banknote) =>
         val left = acc._1
@@ -66,156 +30,142 @@ class AtmProgram[F[_]](using F: Monad[F], console: ConsoleAlg[F], logic: AtmLogi
         if (toGive > 0) (left - (toGive * banknote), currentPlan + (banknote -> toGive))
         else (left, currentPlan)
       }
-
-      if (leftover == 0)
-        val lines = plan.map((note, count) => s"Купюры $note руб. -> $count шт.").toList
-        Writer(List("План выдачи успешно составлен") ++ lines, Some(plan))
-      else
-        Writer(List("В банкомате нет нужных купюр для выдачи такой суммы"), None)
+      if (leftover == 0) Some(plan) else None
     }
 
-  def printLines(logs: List[String]): F[Unit] =
-    for {
-      _ <- console.putStrLn("ЧЕК ОПЕРАЦИИ")
-      _ <- logs.foldLeft(F.pure(()))((acc, line) => acc.flatMap(_ => console.putStrLn(s"> $line")))
-    } yield ()
-
-  def userMenu(): F[Unit] =
-    for {
-      state <- logic.getState
-      _     <- console.putStrLn(s"\nПользователи: ${state.balances.keys.mkString(", ")}")
-      _     <- console.putStr("Введите имя (или 'exit' / 'next'): ")
-      input <- console.readStr
-      _     <- input match {
-        case "exit" => console.putStrLn("Программа завершена.")
-        case "next" =>
-          for {
-            _ <- logic.updateState(_.copy(todayWithdraw = Map.empty))
-            _ <- console.putStrLn("> Наступил новый день. Лимиты сброшены.")
-            _ <- userMenu()
-          } yield ()
-        case name if state.balances.contains(name) =>
-          mainMenu(name)
-        case _ =>
-          for {
-            _ <- console.putStrLn("Пользователь не найден!")
-            _ <- userMenu()
-          } yield ()
+  def askAmount(user: String, action: Double => F[Unit]): F[Unit] =
+    console.putStr("Введите сумму операции: ") *> console.readStr.flatMap { input =>
+      input.toDoubleOption match {
+        case Some(amt) => action(amt)
+        case None      => console.putStrLn("Введите корректное число!") *> mainMenuLoop(user)
       }
-    } yield ()
+    }
 
-  def mainMenu(user: String): F[Unit] =
-    for {
-      state <- logic.getState
-      bal   = state.balances.getOrElse(user, 0.0)
-      _     <- console.putStrLn(s"\n👤 Аккаунт: $user | 💰 Доступно: $bal руб.")
-      _     <- console.putStrLn(atmMenu.show)
-      _     <- console.putStr("Ваш выбор: ")
-      choice <- console.readStr
-      _     <- atmMenu.handleInput(user, state, choice)
-    } yield ()
-
-  def doWithdraw(user: String): F[Unit] =
-    for {
-      _       <- console.putStr("Введите сумму: ")
-      input   <- console.readStr
-      amount  = input.toIntOption.getOrElse(0)
-      state   <- logic.getState
-      bal     = state.balances.getOrElse(user, 0.0)
-      today   = state.todayWithdraw.getOrElse(user, 0.0)
-      chk     <- checkWithdrawRule(bal, today, amount.toDouble)
-      _       <- if (!chk.value) printLines(chk.log).flatMap(_ => mainMenu(user))
-      else for {
-        planChk <- calculatePlan(amount, state.cashInMachine)
-        _       <- planChk.value match {
-          case Some(plan) =>
-            for {
-              _ <- logic.updateState { st =>
-                val oldB = st.balances.getOrElse(user, 0.0)
-                val oldW = st.todayWithdraw.getOrElse(user, 0.0)
-                val nextCash = st.cashInMachine.map { (n, c) => (n, c - plan.getOrElse(n, 0)) }
-                st.copy(
-                  balances = st.balances.updated(user, oldB - amount),
-                  cashInMachine = nextCash,
-                  todayWithdraw = st.todayWithdraw.updated(user, oldW + amount)
-                )
-              }
-              _ <- printLines(chk.log ++ planChk.log :+ s"Выдано: $amount")
-              _ <- mainMenu(user)
-            } yield ()
-          case None =>
-            printLines(chk.log ++ planChk.log).flatMap(_ => mainMenu(user))
-        }
+  def handleWithdraw(user: String): F[Unit] =
+    askAmount(user, amt =>
+      for {
+        state <- logic.getState
+        bal   = state.balances.getOrElse(user, 0.0)
+        today = state.todayWithdraw.getOrElse(user, 0.0)
+        isOk  <- checkWithdrawRule(bal, today, amt)
+        _     <- if (!isOk) then console.putStrLn("Ошибка: Проверьте баланс или лимит!") *> mainMenuLoop(user)
+        else processWithdrawal(user, amt.toInt, state)
       } yield ()
-    } yield ()
+    )
 
-  def doDeposit(user: String): F[Unit] =
-    for {
-      _      <- console.putStr("Сумма пополнения: ")
-      input  <- console.readStr
-      amount = input.toDoubleOption.getOrElse(0.0)
-      _      <- if (amount <= 0) console.putStrLn("Ошибка суммы!").flatMap(_ => mainMenu(user))
-      else for {
-        _ <- logic.updateState { st =>
-          val old = st.balances.getOrElse(user, 0.0)
-          st.copy(balances = st.balances.updated(user, old + amount))
-        }
-        _ <- printLines(List(s"Успешное пополнение на $amount"))
-        _ <- mainMenu(user)
-      } yield ()
-    } yield ()
+  def processWithdrawal(user: String, amount: Int, state: AtmState): F[Unit] =
+    calculatePlan(amount, state.cashInMachine).flatMap {
+      case Some(plan) =>
+        logic.updateState { st =>
+          val nextCash = st.cashInMachine.map { (n, c) => (n, c - plan.getOrElse(n, 0)) }
+          val currentToday = st.todayWithdraw.getOrElse(user, 0.0)
+          st.copy(
+            balances = st.balances.updated(user, st.balances.getOrElse(user, 0.0) - amount),
+            cashInMachine = nextCash,
+            todayWithdraw = st.todayWithdraw.updated(user, currentToday + amount)
+          )
+        } *> console.putStrLn("ЧЕК ОПЕРАЦИИ") *>
+          plan.map((n, c) => s"Выдано купюр номинала $n: $c шт.").toList.traverse(console.putStrLn) *>
+          mainMenuLoop(user)
+      case None =>
+        console.putStrLn("Ошибка: В банкомате нет подходящих купюр!") *> mainMenuLoop(user)
+    }
 
-  def doTransfer(user: String): F[Unit] =
-    for {
-      _      <- console.putStr("Имя получателя: ")
-      toUser <- console.readStr
-      _      <- handleTransferTarget(toUser, user)
-    } yield ()
-
-  def handleTransferTarget(toUser: String, user: String): F[Unit] =
-    for {
-      exists <- logic.userExists(toUser)
-      _      <- if (!exists)
-        console.putStrLn("Такого пользователя нет!").flatMap(_ => mainMenu(user))
-      else if (user == toUser)
-        console.putStrLn("Ошибка: перевод самому себе невозможен.").flatMap(_ => mainMenu(user))
+  def handleDeposit(user: String): F[Unit] =
+    askAmount(user, amt =>
+      if (amt <= 0) then
+        console.putStrLn("Сумма должна быть больше нуля!") *> mainMenuLoop(user)
       else
-        for {
-          _     <- console.putStr("Сумма перевода: ")
-          input <- console.readStr
-          _     <- processTransfer(input, user, toUser)
-        } yield ()
-    } yield ()
+        logic.updateState { st =>
+          val old = st.balances.getOrElse(user, 0.0)
+          st.copy(balances = st.balances.updated(user, old + amt))
+        } *> console.putStrLn(s"Успешно зачислено: $amt руб.") *> mainMenuLoop(user)
+    )
 
-  def processTransfer(input: String, user: String, toUser: String): F[Unit] =
-    val amount = input.toDoubleOption.getOrElse(0.0)
-    if (amount <= 0) then
-      console.putStrLn("Сумма перевода должна быть больше нуля!").flatMap(_ => mainMenu(user))
+  def handleTransfer(user: String): F[Unit] =
+    console.putStr("Введите имя получателя: ") *> console.readStr.flatMap { toUser =>
+      logic.userExists(toUser).flatMap {
+        case false => console.putStrLn("Получатель не найден!") *> mainMenuLoop(user)
+        case true if user == toUser => console.putStrLn("Нельзя переводить самому себе!") *> mainMenuLoop(user)
+        case true => askAmount(user, amt => processTransfer(user, toUser, amt))
+      }
+    }
+
+  def processTransfer(user: String, toUser: String, amt: Double): F[Unit] =
+    if (amt <= 0) then
+      console.putStrLn("Некорректная сумма!") *> mainMenuLoop(user)
     else
       for {
         cfg   <- logic.getContext
         state <- logic.getState
-
-        fee = amount * (cfg.comission / 100.0)
-        totalAmount = amount + fee
-
-        fromBalance = state.balances.getOrElse(user, 0.0)
-
-        _ <- if (fromBalance >= totalAmount) then
-          for {
-            _ <- logic.updateState { st =>
-              val toBalance = st.balances.getOrElse(toUser, 0.0)
-              val updatedBalances = st.balances
-                .updated(user, fromBalance - totalAmount)
-                .updated(toUser, toBalance + amount)
-              st.copy(balances = updatedBalances)
-            }
-            _ <- printLines(List(s"Перевод совершен: $amount отдан $toUser. Списана комиссия $fee"))
-            _ <- mainMenu(user)
-          } yield ()
+        fee   = amt * (cfg.comission / 100.0)
+        total = amt + fee
+        fromB = state.balances.getOrElse(user, 0.0)
+        toB   = state.balances.getOrElse(toUser, 0.0)
+        _     <- if (fromB < total) then
+          console.putStrLn(s"Недостаточно средств! Требуется с комиссией: $total руб.") *> mainMenuLoop(user)
         else
-          for {
-            _ <- printLines(List("Недостаточно средств для перевода и комиссии"))
-            _ <- mainMenu(user)
-          } yield ()
+          logic.updateState { st =>
+            st.copy(balances = st.balances.updated(user, fromB - total).updated(toUser, toB + amt))
+          } *> console.putStrLn(s"Успешный перевод $amt руб. (Комиссия: $fee руб.)") *> mainMenuLoop(user)
       } yield ()
+
+
+  def run: F[Unit] = userMenuLoop
+
+  def userMenuLoop: F[Unit] =
+    val startMenu = Menu[F](
+      "\nДОБРО ПОЖАЛОВАТЬ В БАНКОМАТ",
+      List(
+        MenuItem("Войти в аккаунт",       console.putStr("Введите имя: ") *> console.readStr.flatMap(handleLogin)),
+        MenuItem("Сбросить лимиты суток", logic.updateState(_.copy(todayWithdraw = Map.empty)) *>
+          console.putStrLn("> Лимиты суток сброшены.") *> userMenuLoop),
+        MenuItem("Завершить работу",       console.putStrLn("Программа завершена."))
+      )
+    )
+
+    for {
+      state <- logic.getState
+      _     <- console.putStrLn(startMenu.header)
+      _     <- console.putStrLn(s"Зарегистрированные пользователи: ${state.balances.keys.mkString(", ")}")
+      _     <- startMenu.items.zipWithIndex.map((item, i) => s"  [${i + 1}] ${item.name}").traverse(console.putStrLn)
+      _     <- console.putStr("> ")
+      choice <- console.readStr
+      index = choice.trim.toIntOption.map(_ - 1).getOrElse(-1)
+      _     <- if (index >= 0 && index < startMenu.items.length) then
+        startMenu.items(index).exec
+      else
+        console.putStrLn("Неверный выбор. Попробуйте снова.") *> userMenuLoop
+    } yield ()
+
+  def handleLogin(name: String): F[Unit] =
+    logic.userExists(name.trim).flatMap {
+      case true  => mainMenuLoop(name.trim)
+      case false => console.putStrLn("Пользователь не найден!") *> userMenuLoop
+    }
+
+  def mainMenuLoop(user: String): F[Unit] =
+    val atmMenu = Menu[F](
+      "ГЛАВНОЕ МЕНЮ",
+      List(
+        MenuItem("Снять наличные",       handleWithdraw(user)),
+        MenuItem("Пополнить счет",       handleDeposit(user)),
+        MenuItem("Сделать перевод",      handleTransfer(user)),
+        MenuItem("Выйти из аккаунта",    console.putStrLn(s"Сессия $user завершена.") *> userMenuLoop)
+      )
+    )
+
+    for {
+      state <- logic.getState
+      bal   = state.balances.getOrElse(user, 0.0)
+      _     <- console.putStrLn(s"\nАккаунт: $user | Доступно: $bal руб.")
+      _     <- console.putStrLn(atmMenu.header)
+      _     <- atmMenu.items.zipWithIndex.map((item, i) => s"  [${i + 1}] ${item.name}").traverse(console.putStrLn)
+      _     <- console.putStr("Ваш выбор: ")
+      choice <- console.readStr
+      index = choice.trim.toIntOption.map(_ - 1).getOrElse(-1)
+      _     <- if (index >= 0 && index < atmMenu.items.length) then
+        atmMenu.items(index).exec
+      else
+        console.putStrLn("Неверный выбор. Попробуйте снова.") *> mainMenuLoop(user)
+    } yield ()

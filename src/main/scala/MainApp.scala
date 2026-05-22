@@ -1,29 +1,32 @@
 import models.*
 import algebras.*
 import interpreters.*
-import interpreters.given
 import programs.AtmProgram
+import cats.effect.{IO, Ref}
+import cats.effect.unsafe.implicits.global
+import cats.Monad
 
-object MainApp:
+@main def main(): Unit =
+  val config = AtmConfig(
+    daylim = 10000.0,
+    comission = 2.0,
+    banknotes = List(100, 200, 500, 1000, 2000),
+    round = false
+  )
 
-  def main(args: Array[String]): Unit =
-    given consoleImpl: ConsoleAlg[AtmStack] = new ConsoleInterpreter
-    given logicImpl: AtmLogicAlg[AtmStack]   = new LogicInterpreter
+  val startState = AtmState(
+    balances = Map("Ivan" -> 15000.0, "Masha" -> 3000.0, "Oleg" -> 500.0),
+    cashInMachine = Map(2000 -> 5, 1000 -> 10, 500 -> 10, 200 -> 15, 100 -> 20),
+    todayWithdraw = Map("Ivan" -> 0.0)
+  )
 
-    val atmProgram = new AtmProgram[AtmStack]
+  val stateRef = Ref.unsafe[IO, AtmState](startState)
 
-    val config = AtmConfig(
-      daylim = 10000.0,
-      comission = 2.0,
-      banknotes = List(100, 200, 500, 1000, 2000),
-      round = false
-    )
+  val consoleAlg: ConsoleAlg[IO] = new ConsoleInterpreter
+  val logicAlg: AtmLogicAlg[IO]   = new LogicInterpreter(config, stateRef)
 
-    val startState = AtmState(
-      balances = Map("Ivan" -> 15000.0, "Masha" -> 3000.0, "Oleg" -> 500.0),
-      cashInMachine = Map(2000 -> 5, 1000 -> 10, 500 -> 10, 200 -> 15, 100 -> 20),
-      todayWithdraw = Map("Ivan" -> 2000.0)
-    )
+  val program = new AtmProgram[IO](consoleAlg, logicAlg)(
+    using summon[Monad[IO]]
+  )
 
-    val appStateIO = atmProgram.userMenu().run(config).run(startState)._1
-    appStateIO.unsafeRun()
+  program.run.unsafeRunSync()

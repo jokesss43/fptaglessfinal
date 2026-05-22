@@ -4,5 +4,8 @@ ThisBuild / scalaVersion := "3.3.7"
 
 lazy val root = (project in file("."))
   .settings(
-    name := "TaglessFinal"
+    name := "TaglessFinal",
+    libraryDependencies ++= Seq(
+      "org.typelevel" %% "cats-effect" % "3.5.4"
+    )
   )

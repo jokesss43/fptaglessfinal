@@ -1,14 +1,9 @@
 package interpreters
 
 import algebras.ConsoleAlg
-import models.{Reader, State, IO}
+import cats.effect.IO
 
-class ConsoleInterpreter extends ConsoleAlg[AtmStack]:
-  def putStrLn(s: String): AtmStack[Unit] =
-    Reader(_ => State(st => (IO.delay(println(s)), st)))
-
-  def putStr(s: String): AtmStack[Unit] =
-    Reader(_ => State(st => (IO.delay(print(s)), st)))
-
-  def readStr: AtmStack[String] =
-    Reader(_ => State(st => (IO.delay(scala.io.StdIn.readLine()), st)))
+class ConsoleInterpreter extends ConsoleAlg[IO]:
+  def putStrLn(s: String): IO[Unit] = IO.println(s)
+  def putStr(s: String): IO[Unit]   = IO.print(s)
+  def readStr: IO[String]           = IO.blocking(scala.io.StdIn.readLine())

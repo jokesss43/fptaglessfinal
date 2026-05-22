@@ -1,17 +1,18 @@
 package interpreters
 
 import algebras.AtmLogicAlg
-import models.{AtmConfig, AtmState, Reader, State, IO}
+import cats.effect.{IO, Ref}
+import models.{AtmConfig, AtmState}
 
-class LogicInterpreter extends AtmLogicAlg[AtmStack]:
-  def getContext: AtmStack[AtmConfig] =
-    Reader(cfg => State(st => (IO.pure(cfg), st)))
+class LogicInterpreter(cfg: AtmConfig, stateRef: Ref[IO, AtmState]) extends AtmLogicAlg[IO]:
+  def getContext: IO[AtmConfig] =
+    IO.pure(cfg)
 
-  def getState: AtmStack[AtmState] =
-    Reader(_ => State(st => (IO.pure(st), st)))
+  def getState: IO[AtmState] =
+    stateRef.get
 
-  def updateState(f: AtmState => AtmState): AtmStack[Unit] =
-    Reader(_ => State(st => (IO.pure(()), f(st))))
+  def updateState(f: AtmState => AtmState): IO[Unit] =
+    stateRef.update(f)
 
-  def userExists(user: String): AtmStack[Boolean] =
-    Reader(_ => State(st => (IO.pure(st.balances.contains(user)), st)))
+  def userExists(user: String): IO[Boolean] =
+    stateRef.get.map(_.balances.contains(user))
